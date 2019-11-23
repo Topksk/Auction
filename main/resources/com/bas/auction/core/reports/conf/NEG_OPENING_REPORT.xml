@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<sql>
+    <sqlStatement name="NEG_HEADER">
+        <![CDATA[
+SELECT nh.doc_number
+      ,nh.neg_type
+      ,UPPER(lv1.meaning) neg_type_meaning
+      ,a.city
+      ,c.name_ru customer_name
+      ,TO_CHAR(now(), 'DD.MM.YYYY') creation_date
+      ,stage
+  FROM auction.pd_neg_header nh
+  JOIN auction.Lookup_Values lv1
+    ON lv1.Lookup_Code = nh.neg_type
+   AND lv1.Lookup_Type = 'PURCHASE_METHOD'
+   AND lv1.Language = 'RU'
+  JOIN auction.Customers c
+    ON c.customer_id = nh.customer_id
+  JOIN auction.Addresses a
+    ON a.customer_id = nh.customer_id
+   AND a.address_type = 'LEGAL'
+ WHERE nh.neg_Id = ?]]>
+    </sqlStatement>
+    <sqlStatement name="NEG_LINES">
+        <![CDATA[
+SELECT nl.line_num, 
+       nl.item_name_ru item_name, 
+       nl.item_short_desc_ru item_description_ru,
+       nl.quantity,
+       nl.amount_without_vat line_amount,
+       COALESCE(nl.bid_count, 0) bid_count
+  FROM auction.pd_neg_header nh
+  JOIN auction.pd_neg_lines nl
+    ON nl.neg_id = nh.neg_id
+ WHERE nh.neg_id = ?
+ ORDER BY line_num]]>
+    </sqlStatement>
+    <sqlStatement name="NEG_LINE_BIDS">
+    <![CDATA[
+SELECT bl.line_num,
+       b.bid_id,
+       bl.line_num,
+       s.name_ru vendor_name,
+       Case
+          When A1.Address_Id Is Not Null Then
+		   concat('КАТО:' || A1.Kato || ', ', 'г.' || A1.City || ', ', A1.Address_Line || ', ',
+		          'тел. ' || A1.Phone_Number)
+		  Else
+		   concat('КАТО:' || A2.Kato || ', ', 'г.' || A2.City || ', ', A2.Address_Line,
+		  	      'тел. ' || A2.Phone_Number)
+       End vendor_address,
+       SUM(bl.bid_price * bl.quantity * COALESCE(b.unlock_exchange_rate, 1)) OVER (PARTITION BY b.bid_id, bl.line_num) total_bid_line_price,
+       TO_CHAR(b.publish_date, 'DD.MM.YYYY HH24:MI:SS') publish_date
+  FROM auction.pd_bid_header b
+  LEFT JOIN auction.pd_bid_lines bl
+    ON bl.bid_id = b.bid_id
+  LEFT JOIN auction.suppliers s
+    ON s.supplier_id = b.supplier_id
+  LEFT JOIN LATERAL (SELECT address_id, kato, city, address_line, phone_number
+                       FROM auction.addresses
+                      WHERE addresses.supplier_id = s.supplier_id
+                        AND address_type = 'PHYSICAL_ADDRESS'
+                      LIMIT 1) a1
+    ON true
+  LEFT JOIN LATERAL (SELECT address_id, kato, city, address_line, phone_number
+                       FROM auction.addresses
+                      WHERE addresses.supplier_id = s.supplier_id
+                        AND address_type = 'LEGAL'
+                      LIMIT 1) a2
+    ON true
+ WHERE b.neg_id = ?
+   AND b.bid_status = 'ACTIVE']]>
+    </sqlStatement>
+    <sqlStatement name="MEMBERS">
+        <![CDATA[
+SELECT nt.member_position, u.full_name, lv.meaning member_role
+  FROM auction.pd_neg_team nt
+  JOIN auction.users_v u
+    ON u.user_id = nt.user_id
+  LEFT JOIN auction.lookup_values lv
+    ON lv.lookup_type = 'NEG_TEAM_ROLES'
+   AND lv.lookup_code = nt.role_code
+   AND lv.language = 'RU'
+ WHERE nt.neg_id = ?]]>
+    </sqlStatement>
+  <sqlStatement name="BID_DOCUMENTS">
+      <![CDATA[
+SELECT row_number() over(PARTITION BY b.bid_id ORDER BY f.file_name) row_num, 
+       f.file_name, 
+       l.meaning file_type,
+       TO_CHAR(f.creation_date, 'DD.MM.YYYY') creation_date,
+       s.name_ru vendor_name
+  FROM auction.files f
+  JOIN auction.file_attributes fa
+    ON fa.file_id = f.file_id
+  JOIN auction.pd_bid_header b
+    ON fa.value = b.bid_id::text
+   AND fa.name = 'bid_id'
+  JOIN auction.suppliers s
+    ON s.supplier_id = b.supplier_id
+  LEFT JOIN auction.file_attributes fa2
+    ON fa2.name = 'file_type'
+   AND fa2.file_id = fa.file_id
+  LEFT JOIN auction.lookup_values l
+    ON fa2.value = l.lookup_code
+   AND l.lookup_type = 'BID_HDR_DOCS'
+   AND l.language = 'RU'
+ WHERE b.neg_id = ?
+   AND b.bid_status = 'ACTIVE']]>
+  </sqlStatement>
+</sql>

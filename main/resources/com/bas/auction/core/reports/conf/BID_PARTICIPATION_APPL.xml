@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<sql>
+    <sqlStatement name="REP_HEADER">
+        <![CDATA[
+SELECT CASE WHEN s.is_legal_entity  THEN 'Y' ELSE 'N' END is_legal,
+       lv.meaning neg_type,
+       s.name_ru vendor_name,
+       c.name_ru customer_name,
+       s.state_reg_number gov_number,
+       s.rnn,
+       s.identification_number bin,
+       Case
+				 When A1.Address_Id Is Not Null Then
+				  concat('КАТО:' || A1.Kato || ', ', 'г.' || A1.City || ', ', A1.Address_Line)
+				 Else
+				  concat('КАТО:' || A2.Kato || ', ', 'г.' || A2.City || ', ', A2.Address_Line)
+	   END address_legal,
+	   concat('КАТО:' || A1.Kato || ', ', 'г.' || A1.City || ', ', A1.Address_Line) address_fact,
+       COALESCE(a1.phone_number, a2.phone_number) phone,
+       concat_ws(chr(10), ba.name, ba.bank_number, ba.account) bank,
+       s.chief_full_name manager,
+       n.title auction_title,
+       b.bid_limit_days "day",
+       to_char(b.creation_date, 'DD.MM.YYYY') creation_date,
+       concat_ws(' ', p.last_name, p.first_name, p.middle_name) created_by
+  FROM auction.suppliers s
+  JOIN auction.pd_bid_header b
+    ON s.supplier_id = b.supplier_id
+  JOIN auction.pd_neg_header n
+    ON b.neg_id = n.neg_id
+  JOIN auction.customers c
+    ON c.customer_id = n.customer_id
+  JOIN auction.lookup_values lv
+    ON lv.lookup_code = n.neg_type
+  JOIN auction.users u
+    ON u.user_id = b.created_by
+  JOIN auction.persons p
+    ON p.person_id = u.person_id
+  LEFT JOIN auction.bank_accounts ba
+    ON ba.supplier_id = s.supplier_id
+   AND main_account
+  LEFT JOIN Auction.Addresses a1
+    ON a1.supplier_id = s.supplier_id
+   AND a1.address_type = 'PHYSICAL_ADDRESS'
+  LEFT JOIN Auction.Addresses a2
+    ON a2.supplier_id = s.supplier_id
+   AND a2.address_type = 'LEGAL'
+ WHERE b.bid_id = ?
+   AND lookup_type = 'PURCHASE_METHOD'
+   AND language = 'RU'
+ LIMIT 1]]>
+    </sqlStatement>
+    <sqlStatement name="ITEMS">
+        <![CDATA[
+SELECT bl.line_num
+      ,nl.item_name_ru item_description
+      ,nl.item_short_desc_ru item_description_ru
+      ,nl.shipping_location
+  FROM auction.pd_bid_header bh
+  JOIN auction.pd_bid_lines bl
+    ON bl.bid_id = bh.bid_id
+  JOIN auction.pd_neg_lines nl
+    ON nl.neg_id = bh.neg_id
+   AND nl.line_num = bl.line_num
+ WHERE bh.bid_id = ?
+   AND (bl.bid_price is not null OR bl.participate_tender2)
+ ORDER BY bl.line_num]]>
+    </sqlStatement>
+    <sqlStatement name="DISCOUNTS">
+        <![CDATA[
+SELECT nd.discount_id,
+       bd.bid_line_num line_num,
+       nd.description,
+       COALESCE(ndv.discount, 0) discount
+  FROM auction.pd_bid_header bh
+  JOIN auction.pd_bid_discounts bd
+    ON bh.bid_id = bd.bid_id
+  JOIN auction.pd_neg_discounts nd
+    ON bd.discount_id = nd.discount_id
+   AND bh.neg_id = nd.neg_id
+  LEFT JOIN auction.pd_neg_discount_values ndv
+    ON ndv.discount_id = nd.discount_id
+   AND ndv.neg_id = nd.neg_id
+   AND ndv.bool_value = bd.bool_value
+ WHERE nd.discount_type = 'YES_NO'
+   AND bh.bid_id = ?
+
+UNION
+
+SELECT nd.discount_id,
+       bd.bid_line_num line_num,
+       nd.description,
+       COALESCE(ndv.discount, 0) discount
+  FROM auction.pd_bid_header bh
+  JOIN auction.pd_bid_discounts bd
+    ON bh.bid_id = bd.bid_id
+  JOIN auction.pd_neg_discounts nd
+    ON bd.discount_id = nd.discount_id
+   AND bh.neg_id = nd.neg_id
+  LEFT JOIN auction.pd_neg_discount_values ndv
+    ON ndv.discount_id = nd.discount_id
+   AND ndv.neg_id = nd.neg_id
+   AND number_value >= number_from
+   AND number_value < COALESCE(number_to, 9999999999999)
+ WHERE nd.discount_type = 'NUMBER_RANGE'
+   AND bh.bid_id = ?]]>
+    </sqlStatement>
+    <sqlStatement name="DOCUMENTS">
+        <![CDATA[
+SELECT row_number() over(ORDER BY f.file_name) row_num, f.file_name, l.meaning file_type
+  FROM auction.files f
+  JOIN auction.file_attributes fa
+    ON fa.file_id = f.file_id
+  LEFT JOIN auction.file_attributes fa2
+    ON fa2.name = 'file_type'
+   AND fa2.file_id = fa.file_id
+  LEFT JOIN auction.lookup_values l
+    ON fa2.value = l.lookup_code
+   AND l.lookup_type = 'BID_HDR_DOCS'
+   AND l.language = 'RU'
+ WHERE fa.value = ?::text
+   AND fa.name = 'bid_id']]>
+    </sqlStatement>
+</sql>

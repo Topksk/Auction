@@ -1,0 +1,162 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<sql>
+    <sqlStatement name="NEG_HEADER">
+        <![CDATA[
+Select nh.doc_number
+      ,nh.neg_type
+      ,UPPER(lv1.meaning) neg_type_meaning
+      ,a.city
+      ,TO_CHAR(now(), 'DD.MM.YYYY') award_date
+      ,c.name_ru customer_name
+      ,nh.title
+  FROM auction.pd_neg_header nh
+  JOIN auction.lookup_values lv1
+    ON lv1.lookup_code = nh.neg_type
+   AND lv1.lookup_type = 'PURCHASE_METHOD'
+   AND lv1.language = 'RU'
+  JOIN auction.customers c
+    ON c.customer_id = nh.customer_id
+  JOIN auction.addresses a
+    ON a.customer_id = nh.customer_id
+   AND a.address_type = 'LEGAL'
+ WHERE nh.neg_id = ?]]>
+    </sqlStatement>
+    <sqlStatement name="NEG_LINES">
+        <![CDATA[
+SELECT nl.line_num, 
+       nl.item_name_ru item_name, 
+       nl.item_short_desc_ru item_description_ru,
+       nl.quantity + 0.00 quantity,
+       nl.amount_without_vat line_amount,
+       nl.fail_reason,
+       COALESCE(nl.bid_count, 0) bid_count
+  FROM auction.pd_neg_lines nl
+ WHERE nl.neg_id = ?
+ ORDER BY line_num]]>
+    </sqlStatement>
+    <sqlStatement name="NEG_LINE_BIDS">
+        <![CDATA[
+SELECT b.bid_id,
+       bl.line_num,
+       bl.bid_line_status,
+       COALESCE(bl.rank, 0) rank,
+       s.name_ru vendor_name,
+       Case
+          When A1.Address_Id Is Not Null Then
+		   concat('КАТО:' || A1.Kato || ', ', 'г.' || A1.City || ', ', A1.Address_Line || ', ',
+		          'тел. ' || A1.Phone_Number)
+		  Else
+		   concat('КАТО:' || A2.Kato || ', ', 'г.' || A2.City || ', ', A2.Address_Line,
+		  	      'тел. ' || A2.Phone_Number)
+       End vendor_address,
+       SUM(bl.bid_price * bl.quantity * COALESCE(b.unlock_exchange_rate, 1)) OVER (PARTITION BY b.bid_id, bl.line_num) total_bid_line_price,
+       SUM(bl.bid_price * bl.quantity * COALESCE(b.unlock_exchange_rate, 1)) OVER (PARTITION BY b.bid_id, bl.line_num) * (1 - bl.discount/100) total_bid_line_price_disc,
+       auction.number2word(SUM(bl.bid_price * bl.quantity * COALESCE(b.unlock_exchange_rate, 1)) OVER (PARTITION BY b.bid_id, bl.line_num), 'KZT') total_bid_line_price_word,
+       COALESCE(bl.discount, 0)  + 0.00 discount,
+       TO_CHAR(b.publish_date, 'DD.MM.YYYY HH24:MI:SS') publish_date,
+       CASE BOOL_OR(permitted) OVER(PARTITION BY bl.line_num)
+            WHEN true THEN 'Y'
+            WHEN false THEN 'N'
+            ELSE NULL END has_permit,
+       CASE BOOL_OR(NOT permitted) OVER(PARTITION BY bl.line_num)
+            WHEN true THEN 'Y'
+            WHEN false THEN 'N'
+            ELSE NULL END has_rejected,
+       CASE permitted
+            WHEN true THEN 'Y'
+            WHEN false THEN 'N'
+            ELSE NULL END permitted,
+       reject_reason
+  FROM auction.pd_bid_header b
+  JOIN auction.pd_bid_lines bl
+    ON bl.bid_id = b.bid_id
+  JOIN LATERAL (SELECT BOOL_AND(COALESCE(bp.permitted, false)) permitted, STRING_AGG(bp.reject_reason, chr(10)) reject_reason
+                       FROM auction.pd_bid_permissions bp 
+                      WHERE bp.bid_id = b.bid_id
+                        AND bp.bid_line_num = bl.line_num) sbp
+    ON true
+  JOIN auction.suppliers s
+    ON s.supplier_id = b.supplier_id
+  LEFT JOIN LATERAL (SELECT address_id, kato, city, address_line, phone_number
+                       FROM auction.addresses
+                      WHERE addresses.supplier_id = s.supplier_id
+                        AND address_type = 'PHYSICAL_ADDRESS'
+                      LIMIT 1) a1
+    ON true
+  LEFT JOIN LATERAL (SELECT address_id, kato, city, address_line, phone_number
+                       FROM auction.addresses
+                      WHERE addresses.supplier_id = s.supplier_id
+                        AND address_type = 'LEGAL'
+                      LIMIT 1) a2
+    ON true
+ WHERE b.neg_id = ?
+   AND b.bid_status IN ('ACTIVE', 'AWARDED', 'PARTIAL', 'FAILED', 'REJECTED')]]>
+    </sqlStatement>
+    <sqlStatement name="DISCOUNTS">
+        <![CDATA[
+SELECT b.bid_id,
+       bl.line_num,
+       COALESCE(bl.discount, 0) + 0.00 total_discount,
+       bd.discount_id,
+       bd.discount,
+       bd.description,
+       bd.correction_reason,
+       bd.val
+  FROM auction.pd_bid_header b
+  JOIN auction.pd_bid_lines bl
+    ON bl.bid_id = b.bid_id
+  JOIN LATERAL (SELECT bd.discount_id,
+                       nd.description,
+                       COALESCE(ndv.discount, 0.00) discount,
+                       correction_reason,
+                       CASE WHEN bd.bool_value THEN 'Да' ELSE 'Нет' END val
+                  FROM auction.pd_bid_header bh
+                  JOIN auction.pd_bid_discounts bd
+                    ON bh.bid_id = bd.bid_id
+                  JOIN auction.pd_neg_discounts nd
+                    ON bd.discount_id = nd.discount_id
+                   AND bh.neg_id = nd.neg_id
+                  LEFT JOIN auction.pd_neg_discount_values ndv
+                    ON ndv.discount_id = nd.discount_id
+                   AND ndv.neg_id = nd.neg_id
+                   AND ndv.bool_value = bd.bool_value
+                 WHERE nd.discount_type = 'YES_NO'
+                   AND bh.bid_id = b.bid_id
+                   AND bd.bid_line_num = bl.line_num
+                UNION
+                SELECT bd.discount_id,
+                       nd.description,
+                       COALESCE(ndv.discount, 0.00) discount,
+                       correction_reason,
+                       number_value::text val
+                  FROM auction.pd_bid_header bh
+                  JOIN auction.pd_bid_discounts bd
+                    ON bh.bid_id = bd.bid_id
+                  JOIN auction.pd_neg_discounts nd
+                    ON bd.discount_id = nd.discount_id
+                   AND bh.neg_id = nd.neg_id
+                  LEFT JOIN auction.pd_neg_discount_values ndv
+                    ON ndv.discount_id = nd.discount_id
+                   AND ndv.neg_id = nd.neg_id
+                   AND number_value >= number_from
+                   AND number_value < COALESCE(number_to, 9999999999999)
+                 WHERE nd.discount_type = 'NUMBER_RANGE'
+                   AND bh.bid_id = b.bid_id
+                   AND bd.bid_line_num = bl.line_num) bd
+    ON true
+ WHERE b.neg_id = ?
+   AND b.bid_status IN ('ACTIVE', 'AWARDED', 'PARTIAL', 'FAILED', 'REJECTED')
+   AND (SELECT BOOL_AND(COALESCE(bp.permitted, false)) permitted
+          FROM auction.pd_bid_permissions bp
+         WHERE bp.bid_id = b.bid_id
+           AND bp.bid_line_num = bl.line_num)]]>
+    </sqlStatement>
+    <sqlStatement name="MEMBERS">
+        <![CDATA[
+Select Nt.Member_Position, U.Full_Name
+  FROM Auction.Pd_Neg_Team Nt
+  JOIN Auction.Users_v u
+    ON U.User_Id = Nt.User_Id
+ WHERE Nt.Neg_Id = ?]]>
+    </sqlStatement>
+</sql>
